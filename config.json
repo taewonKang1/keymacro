@@ -1,0 +1,21 @@
+{
+  "spam_enabled": false,
+  "spam_vk": 84,
+  "spam_scan": 20,
+  "spam_ext": false,
+  "spam_name": "T",
+  "toggle_vk": 81,
+  "toggle_scan": 16,
+  "toggle_ext": false,
+  "toggle_name": "Q",
+  "rate": 7.0,
+  "mode": "hold",
+  "hold_enabled": false,
+  "hold_seconds": 3.9752,
+  "hold_vk": 71,
+  "hold_scan": 34,
+  "hold_ext": false,
+  "hold_name": "G",
+  "hold_adjust_enabled": false,
+  "press_ms": 50
+}
