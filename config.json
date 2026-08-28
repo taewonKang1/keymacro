@@ -1,5 +1,5 @@
 {
-  "spam_enabled": false,
+  "spam_enabled": true,
   "spam_vk": 84,
   "spam_scan": 20,
   "spam_ext": false,
@@ -8,14 +8,20 @@
   "toggle_scan": 16,
   "toggle_ext": false,
   "toggle_name": "Q",
-  "rate": 7.0,
+  "rate": 6.0,
   "mode": "hold",
   "hold_enabled": false,
-  "hold_seconds": 3.9752,
+  "hold_seconds": 3.9753,
   "hold_vk": 71,
   "hold_scan": 34,
   "hold_ext": false,
   "hold_name": "G",
-  "hold_adjust_enabled": false,
-  "press_ms": 50
+  "hold_adjust_enabled": true,
+  "press_ms": 50,
+  "hold3_enabled": true,
+  "hold3_seconds": 4.1,
+  "hold3_vk": 81,
+  "hold3_scan": 16,
+  "hold3_ext": false,
+  "hold3_name": "Q"
 }

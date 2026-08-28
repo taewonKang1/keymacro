@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-키매크로 - 키 연타 + 좌클릭 꾹 누르기 매크로
-- F1 = ① 연타 켜기/끄기,  F2 = ② 꾹누름 켜기/끄기
+키매크로 - 키 연타 + 좌클릭 꾹 누르기 + 자동 꾹누름 반복 매크로
+- F1 = ① 연타,  F2 = ② 좌클릭 꾹누름,  F3 = ③ 자동 꾹누름 반복
 - 각 매크로는 체크박스로 개별 활성/비활성
+- ③: 특정 키를 설정 시간만큼 눌렀다 떼기를 종료까지 반복
 - 관리자 권한 기본 실행
 순수 표준 라이브러리(ctypes + tkinter)만 사용
 """
@@ -99,6 +100,7 @@ MAPVK_VK_TO_VSC = 0
 VK_LBUTTON = 0x01
 VK_F1 = 0x70    # ① 연타 매크로 켜기/끄기
 VK_F2 = 0x71    # ② 꾹누름 매크로 켜기/끄기
+VK_F3 = 0x72    # ③ 자동 꾹누름 반복 매크로 켜기/끄기
 VK_PGUP = 0x21  # 꾹누름 시간 +0.0001
 VK_PGDN = 0x22  # 꾹누름 시간 -0.0001
 
@@ -197,7 +199,11 @@ DEFAULT_CONFIG = {
     "hold_vk": 82, "hold_scan": 19, "hold_ext": False, "hold_name": "R",
     "hold_adjust_enabled": False,   # PgUp/PgDn 로 꾹누름 시간 ±0.0001 조절
     "press_ms": 50,          # 키를 눌린 상태로 유지하는 시간(ms) - 게임 인식률용
-    # 매크로별 켜기/끄기 단축키: ①=F1, ②=F2 (고정)
+    # 자동 꾹누름 반복 매크로 (특정 키를 설정 시간만큼 누르고 떼기를 반복)
+    "hold3_enabled": False,
+    "hold3_seconds": 3.8,
+    "hold3_vk": 81, "hold3_scan": 16, "hold3_ext": False, "hold3_name": "Q",
+    # 매크로별 켜기/끄기 단축키: ①=F1, ②=F2, ③=F3 (고정)
 }
 
 def load_config():
@@ -259,6 +265,11 @@ class MacroWorker(threading.Thread):
     def _run(self, s):
         prev_f1 = is_pressed(VK_F1)
         prev_f2 = is_pressed(VK_F2)
+        prev_f3 = is_pressed(VK_F3)
+        # ③ 자동 꾹누름 반복 상태
+        h3_down = False         # 대상 키가 현재 눌린 상태인지
+        h3_press_t = 0.0        # 이번 눌림 시작 시각
+        h3_release_t = -1e9     # 마지막 뗌 시각(첫 눌림 즉시 시작)
         prev_toggle = False
         spam_on = False
         prev_lbtn = is_pressed(VK_LBUTTON)
@@ -307,6 +318,12 @@ class MacroWorker(threading.Thread):
                 s["hold_enabled"] = not s["hold_enabled"]
                 self.evq.put(("hold_enabled", s["hold_enabled"]))
             prev_f2 = f2
+
+            f3 = is_pressed(VK_F3)
+            if f3 and not prev_f3:
+                s["hold3_enabled"] = not s["hold3_enabled"]
+                self.evq.put(("hold3_enabled", s["hold3_enabled"]))
+            prev_f3 = f3
 
             # --- PgUp/PgDn: 꾹누름 시간 ±0.0001 (체크 시) ---
             if s.get("hold_adjust_enabled"):
@@ -375,7 +392,45 @@ class MacroWorker(threading.Thread):
                     self.evq.put(("lb_tick", elapsed, lbtn_fired))
                     last_lb_emit = now
 
+            # --- ③ 자동 꾹누름 반복 매크로 ---
+            if s["hold3_enabled"]:
+                gap = s["press_ms"] / 1000.0     # 뗌 → 재눌림 사이 간격
+                if h3_down:
+                    # 눌린 상태: 설정 시간 경과하면 뗌 (임계 4ms 이내 정밀 발동)
+                    remaining = s["hold3_seconds"] - (now - h3_press_t)
+                    if remaining <= 0.004:
+                        while s["hold3_enabled"]:
+                            held = time.perf_counter() - h3_press_t
+                            if held >= s["hold3_seconds"]:
+                                send_key(s["hold3_vk"], s["hold3_scan"],
+                                         s["hold3_ext"], True)   # 키 뗌
+                                h3_down = False
+                                h3_release_t = time.perf_counter()
+                                self.evq.put(("hold3_cycle", held))
+                                break
+                else:
+                    # 뗀 상태: 간격 지나면 다시 누름
+                    if now - h3_release_t >= gap:
+                        send_key(s["hold3_vk"], s["hold3_scan"],
+                                 s["hold3_ext"], False)          # 키 누름
+                        h3_down = True
+                        h3_press_t = now
+                        self.evq.put(("hold3_press", None))
+            else:
+                # 매크로 꺼지면 눌린 키는 반드시 뗌
+                if h3_down:
+                    send_key(s["hold3_vk"], s["hold3_scan"], s["hold3_ext"], True)
+                    h3_down = False
+                    h3_release_t = now
+
             time.sleep(0.001)
+
+        # 종료 시 눌린 키 정리
+        if h3_down:
+            try:
+                send_key(s["hold3_vk"], s["hold3_scan"], s["hold3_ext"], True)
+            except Exception:
+                pass
 
 # ---------------------------------------------------------------------------
 # GUI
@@ -402,11 +457,15 @@ class App:
         pad = {"padx": 8, "pady": 4}
         row = 0
 
-        # 단축키 안내
+        # 단축키 안내 + 로그 열기/닫기 버튼
         top = ttk.Frame(root)
         top.grid(row=row, column=0, columnspan=3, sticky="we", padx=8, pady=(10, 2))
-        ttk.Label(top, text="F1 = ① 연타 켜기/끄기      F2 = ② 꾹누름 켜기/끄기",
+        ttk.Label(top, text="F1=① 연타   F2=② 꾹누름   F3=③ 반복  켜기/끄기",
                   font=("맑은 고딕", 9, "bold")).pack(side="left")
+        self.log_visible = True
+        self.log_toggle_btn = ttk.Button(top, text="로그 닫기 ▶", width=11,
+                                          command=self.toggle_log)
+        self.log_toggle_btn.pack(side="right")
         row += 1
         ttk.Separator(root, orient="horizontal").grid(
             row=row, column=0, columnspan=3, sticky="we", padx=8, pady=4)
@@ -503,18 +562,58 @@ class App:
             row=row, column=0, columnspan=3, sticky="we", padx=8, pady=6)
         row += 1
 
-        self.hint = ttk.Label(root, text="설정 자동 저장.  F1=① 연타 · F2=② 꾹누름 켜고 끄기",
+        # ===== ③ 자동 꾹누름 반복 매크로 =====
+        self.hold3_enabled = tk.BooleanVar(value=self.state["hold3_enabled"])
+        ttk.Checkbutton(root, text="③ 자동 꾹누름 반복 매크로 (F3)",
+                        variable=self.hold3_enabled,
+                        command=self.on_change).grid(row=row, column=0, columnspan=2,
+                                                     sticky="w", **pad)
+        self.hold3_status_lbl = tk.Label(root, text="● 비활성", font=("맑은 고딕", 9, "bold"))
+        self.hold3_status_lbl.grid(row=row, column=2, **pad)
+        row += 1
+
+        ttk.Label(root, text="누를 키").grid(row=row, column=0, sticky="w", **pad)
+        self.hold3_key_lbl = ttk.Label(root, text=self.state["hold3_name"], width=12,
+                                       relief="groove", anchor="center")
+        self.hold3_key_lbl.grid(row=row, column=1, **pad)
+        ttk.Button(root, text="설정", width=6,
+                   command=lambda: self.capture("hold3")).grid(row=row, column=2, **pad)
+        row += 1
+
+        ttk.Label(root, text="누름 시간(초)").grid(row=row, column=0, sticky="w", **pad)
+        self.hold3_sec_var = tk.DoubleVar(value=self.state["hold3_seconds"])
+        h3s = ttk.Spinbox(root, from_=0.0001, to=60, increment=0.1, width=10,
+                          format="%.4f", textvariable=self.hold3_sec_var,
+                          command=self.on_change)
+        h3s.grid(row=row, column=1, sticky="w", **pad)
+        h3s.bind("<KeyRelease>", lambda e: self.on_change())
+        self.hold3_state_lbl = ttk.Label(root, text="정지", foreground="gray",
+                                         width=20, anchor="w")
+        self.hold3_state_lbl.grid(row=row, column=2, sticky="w", **pad)
+        row += 1
+
+        ttk.Label(root, text="설정 시간만큼 누르고 뗌을 종료까지 반복합니다.",
+                  foreground="gray").grid(row=row, column=0, columnspan=3,
+                                          sticky="w", padx=8)
+        row += 1
+
+        ttk.Separator(root, orient="horizontal").grid(
+            row=row, column=0, columnspan=3, sticky="we", padx=8, pady=6)
+        row += 1
+
+        self.hint = ttk.Label(root, text="설정 자동 저장.  F1=① · F2=② · F3=③ 켜고 끄기",
                               foreground="gray")
         self.hint.grid(row=row, column=0, columnspan=3, pady=(0, 8))
         total_rows = row + 1
 
         # ===== 우측: 작동 로그 =====
         self.log_entries = []          # (ts, cat, msg) 전체 보관
-        self.LOG_CATS = ["전체 작동 로그", "② 꾹누름", "① 연타", "상태", "키설정"]
+        self.LOG_CATS = ["전체 작동 로그", "② 꾹누름", "③ 반복", "① 연타", "상태", "키설정"]
 
-        logf = ttk.LabelFrame(root, text="작동 로그")
-        logf.grid(row=0, column=3, rowspan=total_rows, sticky="ns",
-                  padx=(4, 8), pady=10)
+        self.logf = ttk.LabelFrame(root, text="작동 로그")
+        self.logf.grid(row=0, column=3, rowspan=total_rows, sticky="ns",
+                       padx=(4, 8), pady=10)
+        logf = self.logf
 
         # 상단: 항목(카테고리) 선택
         filt = ttk.Frame(logf)
@@ -549,9 +648,10 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(30, self.poll_events)
         self.log("프로그램 시작 (관리자=%s)" % ("예" if is_admin() else "아니오"))
-        self.log("① 연타 %s / ② 꾹누름 %s" % (
+        self.log("① 연타 %s / ② 꾹누름 %s / ③ 반복 %s" % (
             "활성" if self.state["spam_enabled"] else "비활성",
-            "활성" if self.state["hold_enabled"] else "비활성"))
+            "활성" if self.state["hold_enabled"] else "비활성",
+            "활성" if self.state["hold3_enabled"] else "비활성"))
 
     def update_status_labels(self):
         def paint(lbl, on):
@@ -559,6 +659,7 @@ class App:
                        fg="#2e7d32" if on else "#c62828")
         paint(self.spam_status_lbl, self.state["spam_enabled"])
         paint(self.hold_status_lbl, self.state["hold_enabled"])
+        paint(self.hold3_status_lbl, self.state["hold3_enabled"])
 
     # --- 키 캡처 ---
     def capture(self, target):
@@ -573,7 +674,8 @@ class App:
     def _label_for(self, target):
         return {"spam": self.spam_key_lbl,
                 "toggle": self.toggle_key_lbl,
-                "hold": self.hold_key_lbl}[target]
+                "hold": self.hold_key_lbl,
+                "hold3": self.hold3_key_lbl}[target]
 
     # --- 설정 변경 -> state 반영 + 저장 ---
     def on_change(self, *_):
@@ -585,12 +687,18 @@ class App:
             hsec = round(float(self.hold_sec_var.get()), 4)  # 소수점 4자리
         except Exception:
             hsec = self.state["hold_seconds"]
+        try:
+            h3sec = round(float(self.hold3_sec_var.get()), 4)
+        except Exception:
+            h3sec = self.state["hold3_seconds"]
 
         self.state["spam_enabled"] = bool(self.spam_enabled.get())
         self.state["hold_enabled"] = bool(self.hold_enabled.get())
         self.state["hold_adjust_enabled"] = bool(self.hold_adjust_enabled.get())
+        self.state["hold3_enabled"] = bool(self.hold3_enabled.get())
         self.state["rate"] = rate
         self.state["hold_seconds"] = hsec
+        self.state["hold3_seconds"] = h3sec
         self.state["mode"] = self.mode_var.get()
         self.update_status_labels()
         self.persist()
@@ -658,6 +766,27 @@ class App:
                     err = elapsed - setp
                     self.log("② 발동 → [%s]  실제 %.4fs (설정 %.4fs, 오차 %+.4fs)"
                              % (self.state["hold_name"], elapsed, setp, err), "② 꾹누름")
+                elif kind == "hold3_enabled":
+                    self.hold3_enabled.set(args[0])
+                    self.update_status_labels()
+                    self.persist()
+                    if not args[0]:
+                        self.hold3_state_lbl.config(text="정지", foreground="gray")
+                    self.log("③ 반복 %s (F3)" % ("활성" if args[0] else "비활성"),
+                             "③ 반복")
+                elif kind == "hold3_press":
+                    self.hold3_state_lbl.config(
+                        text="누르는 중 [%s]" % self.state["hold3_name"],
+                        foreground="#1565c0")
+                elif kind == "hold3_cycle":
+                    held = args[0]
+                    self._h3_count = getattr(self, "_h3_count", 0) + 1
+                    self.hold3_state_lbl.config(
+                        text="뗌 (%d회, %.4fs)" % (self._h3_count, held),
+                        foreground="red")
+                    self.log("③ 1회 완료 → [%s] %.4fs 유지 (설정 %.4fs, 누적 %d회)"
+                             % (self.state["hold3_name"], held,
+                                self.state["hold3_seconds"], self._h3_count), "③ 반복")
         except queue.Empty:
             pass
         self.root.after(30, self.poll_events)
@@ -673,7 +802,8 @@ class App:
         self.state[target + "_name"] = name
         self._label_for(target).config(text=name)
         self.persist()
-        tnm = {"spam": "연타할 키", "toggle": "토글 키", "hold": "꾹누름 키"}.get(target, target)
+        tnm = {"spam": "연타할 키", "toggle": "토글 키", "hold": "꾹누름 키",
+               "hold3": "반복 누를 키"}.get(target, target)
         self.log("키 설정: %s = [%s]" % (tnm, name), "키설정")
 
     # --- 로그 ---
@@ -722,6 +852,16 @@ class App:
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
         self._update_count()
+
+    def toggle_log(self):
+        """작동 로그 패널 열기/닫기 (창 폭이 함께 줄었다 늘어남)"""
+        self.log_visible = not self.log_visible
+        if self.log_visible:
+            self.logf.grid()
+            self.log_toggle_btn.config(text="로그 닫기 ▶")
+        else:
+            self.logf.grid_remove()
+            self.log_toggle_btn.config(text="로그 열기 ◀")
 
     def on_close(self):
         self.worker.stop()
